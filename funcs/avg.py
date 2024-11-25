@@ -1,3 +1,5 @@
+__all__ = ['EWMA']
+
 class EWMA:
     def __init__(self, alpha):
         self.alpha = alpha

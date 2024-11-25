@@ -4,6 +4,8 @@ from contextlib import AbstractContextManager
 from IPython.display import display
 from .py import NopContextManager
 
+__all__ = ['new_display', 'TextDisplay', 'TailDisplay', 'TableDisplay', 'FigureDisplay']
+
 def new_display(hint=None):
     return display(display_id=True) if hint is None else display(hint, display_id=True)
 

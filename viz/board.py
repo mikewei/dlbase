@@ -2,6 +2,8 @@ import matplotlib.pyplot as plt
 from dlbase.utils.py import save_params
 from dlbase.utils.nb import FigureDisplay
 
+__all__ = ['ProgressBoard']
+
 class ProgressBoard(FigureDisplay):
     """The board that plots data points in animation."""
 
