@@ -1,2 +1,2 @@
-__all__ = ['nb', 'py']
+__all__ = ['nb', 'py', 'tch']
 from . import *
