@@ -38,21 +38,21 @@ class ProgressBoard(FigureDisplay):
         line.append(Point(mean([p.x for p in points]),
                           mean([p.y for p in points])))
         points.clear()
-        if not self.is_display:
+        if not self.is_display:  # type: ignore
             return
         if self.fig is None:
-            self.fig = plt.figure(figsize=self.figsize)
+            self.fig = plt.figure(figsize=self.figsize)  # type: ignore
         plt_lines, labels = [], []
-        for (k, v), ls, color in zip(self.data.items(), self.ls, self.colors):
+        for (k, v), ls, color in zip(self.data.items(), self.ls, self.colors):  # type: ignore
             plt_lines.append(plt.plot([p.x for p in v], [p.y for p in v],
                                         linestyle=ls, color=color)[0])
             labels.append(k + f'({v[-1].y:.2f})' if len(v) > 0 else '')
-        axes = self.axes if self.axes else plt.gca()
-        if self.xlim: axes.set_xlim(self.xlim)
-        if self.ylim: axes.set_ylim(self.ylim)
-        axes.set_xlabel(self.xlabel)
-        axes.set_ylabel(self.ylabel)
-        axes.set_xscale(self.xscale)
-        axes.set_yscale(self.yscale)
+        axes = self.axes if self.axes else plt.gca()  # type: ignore
+        if self.xlim: axes.set_xlim(self.xlim)  # type: ignore
+        if self.ylim: axes.set_ylim(self.ylim)  # type: ignore
+        axes.set_xlabel(self.xlabel)  # type: ignore
+        axes.set_ylabel(self.ylabel)  # type: ignore
+        axes.set_xscale(self.xscale)  # type: ignore
+        axes.set_yscale(self.yscale)  # type: ignore
         axes.legend(plt_lines, labels)
         self.show()

@@ -1,4 +1,4 @@
-from typing import Callable, Dict, Tuple, NamedTuple, Literal, Any
+from typing import Callable, Dict, Tuple, NamedTuple, Literal, Optional
 from itertools import chain
 from gymnasium.spaces import Box
 import torch
@@ -86,9 +86,9 @@ class TD3(GymAlgo):
         return actions
     def step_check(self, dones: Tensor) -> Literal['update', 'quit', 'goon']:
         return 'update'
-    def update(self, memory: GymMemory):
+    def update(self, memory: GymMemory) -> Optional[TrainStats]:
         if memory.size() < self.hp.batch_size:
-            return
+            return None
         batch, _ = memory.sample(self.hp.batch_size)
         non_final_mask = ~batch.terms
         non_final_next_states = batch.next_states[non_final_mask]
@@ -111,8 +111,6 @@ class TD3(GymAlgo):
         clip_grad.clip_grad_norm_(self.critic_1.parameters(), self.hp.grad_clip)
         clip_grad.clip_grad_norm_(self.critic_2.parameters(), self.hp.grad_clip)
         self.critic_optim.step()
-        with torch.no_grad():
-            self.last_critic_loss = critic_loss.item()
         # soft update target critic
         # θ′ ← τ θ + (1 −τ )θ′
         critic_1_state_dict = self.critic_1.state_dict()
@@ -141,6 +139,4 @@ class TD3(GymAlgo):
             for key in actor_state_dict:
                 target_actor_state_dict[key] = actor_state_dict[key]*self.hp.tau + target_actor_state_dict[key]*(1-self.hp.tau)
             self.target_actor.load_state_dict(target_actor_state_dict)
-        return None
-    def get_target_actor(self) -> NamedTuple:
-        return self.TrainStats(self.last_critic_loss)
+        return self.TrainStats(critic_loss.item() / 2)

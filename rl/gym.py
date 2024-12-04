@@ -57,8 +57,6 @@ class GymAlgo(ABC):
     def step_check(self, dones: Tensor) -> Literal['update', 'quit', 'goon']:
         ...
     def update(self, memory: GymMemory) -> Optional[NamedTuple]:
-        pass
-    def get_train_stats(self) -> Optional[NamedTuple]:
         return None
 
 class RandomAlgo(GymAlgo):
@@ -115,25 +113,25 @@ class GymDisplay(FigureDisplay):
         plt.close(fig)
 
 class GymRunner:
-    default_options = {
-        'max_episodes': 5000,
-        'table_output_last_n': 10,
-        'show_env_freq': 0,
-        'memory_size': 100000,
-    }
-    def __init__(self, env: Env | VectorEnv, algo: GymAlgo = RandomAlgo(), **kwargs):
+    class Params(NamedTuple):
+        max_episodes: int = 5000
+        table_output_last_n: int = 10
+        show_env_freq: int = 0
+        memory_size: int = 100000
+    def __init__(self, env: Env | VectorEnv, algo: GymAlgo = RandomAlgo(), **params):
+        self.hp = self.Params(**params)
         self.env = env
         self.is_vec = isinstance(env, VectorEnv)
         self.num_envs = env.num_envs if isinstance(env, VectorEnv) else 1
         self.algo = algo
         self.algo.register_env(env)
-        self.options = {**self.__class__.default_options, **kwargs}
         self.need_training = self.algo.need_training()
         if self.need_training:
-            self.memory = GymMemory(self.options['memory_size'], self.num_envs)
-            self.board = ProgressBoard(xlabel='episodes', xlim=(0, self.options['max_episodes']))
-            self.table = TableDisplay(last_n=self.options['table_output_last_n'])
-        if env.render_mode == 'rgb_array' and self.options['show_env_freq'] > 0:
+            self.memory = GymMemory(self.hp.memory_size, self.num_envs)
+            self.last_train_stats = None
+            self.board = ProgressBoard(xlabel='episodes', xlim=(0, self.hp.max_episodes))
+            self.table = TableDisplay(last_n=self.hp.table_output_last_n)
+        if env.render_mode == 'rgb_array' and self.hp.show_env_freq > 0:
             self.gym_dispaly = GymDisplay(env)
         else:
             self.gym_dispaly = None
@@ -154,7 +152,7 @@ class GymRunner:
         episode_rewards = torch.zeros(self.num_envs, dtype=torch.float32)
         episode_steps = torch.zeros(self.num_envs, dtype=torch.int32)
         while True:
-            if self.gym_dispaly and show_env_counter % self.options['show_env_freq'] == 0:
+            if self.gym_dispaly and show_env_counter % self.hp.show_env_freq == 0:
                 self.gym_dispaly.show()
             actions, action_ctxs = self.algo.select_actions(states)
             if self.is_vec:
@@ -175,7 +173,7 @@ class GymRunner:
             episode_rewards += rewards
             episode_dones = terms | truncs
             num_episodes_done = episode_dones.sum()
-            if num_episodes_done > 0:
+            if num_episodes_done > 0:  # some episodes done
                 total_episodes_started += num_episodes_done
                 total_episodes_done += num_episodes_done
                 show_env_counter += 1
@@ -185,8 +183,9 @@ class GymRunner:
             if self.need_training:
                 self.memory.append(StatesMemory(states, actions, rewards, next_states, terms, truncs), action_ctxs)
                 if check_result == 'update':
-                    self.algo.update(self.memory)
-                    self.last_train_stats = self.algo.get_train_stats()
+                    train_stats = self.algo.update(self.memory)
+                    if train_stats is not None:
+                        self.last_train_stats = train_stats
             if episode_dones.all():
                 state, _ = self.env.reset()
                 if self.is_vec:
