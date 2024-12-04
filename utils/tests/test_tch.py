@@ -1,9 +1,12 @@
+import pytest
 import torch
 from collections import namedtuple
 from typing import NamedTuple
 from ..tch import cat_tuples, cat_dicts, cat_namedtuples
 
 def test_cat_tuples():
+    assert cat_tuples() == ()
+    assert cat_tuples((), ()) == ()
     t1 = (torch.tensor([1, 2]), torch.tensor([3, 4]))
     t2 = (torch.tensor([5, 6]), torch.tensor([7, 8]))
     t3 = (torch.tensor([1, 2, 5, 6]), torch.tensor([3, 4, 7, 8]))
@@ -11,6 +14,10 @@ def test_cat_tuples():
         assert (a == b).all()
 
 def test_cat_namedtuples():
+    with pytest.raises(ValueError):
+        cat_namedtuples()
+    Empty = namedtuple('Empty', [])
+    assert cat_namedtuples(Empty(), Empty()) == Empty()
     Test = namedtuple('Test', ['a', 'b'])
     t1 = Test(torch.tensor([1, 2]), torch.tensor([3, 4]))
     t2 = Test(torch.tensor([5, 6]), torch.tensor([7, 8]))
@@ -27,6 +34,8 @@ def test_cat_namedtuples():
         assert (a == b).all()
 
 def test_cat_dicts():
+    assert cat_dicts() == {}
+    assert cat_dicts({}, {}) == {}
     d1 = {'a': torch.tensor([1, 2]), 'b': torch.tensor([3, 4])}
     d2 = {'a': torch.tensor([5, 6]), 'b': torch.tensor([7, 8])}
     d3 = {'a': torch.tensor([1, 2, 5, 6]), 'b': torch.tensor([3, 4, 7, 8])}

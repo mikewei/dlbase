@@ -1,10 +1,11 @@
+from typing import Any
 from functools import wraps
 import inspect
 import contextlib
 
 __all__ = ['paramed_decorator', 'save_params', 'NopContextManager']
 
-def paramed_decorator(inner_decorator):
+def paramed_decorator(inner_decorator) -> Any:
     @wraps(inner_decorator)
     def decorator_wrapper(*args, **kwargs):
         if len(args) == 1 and len(kwargs) == 0 and callable(args[0]):
@@ -15,7 +16,8 @@ def paramed_decorator(inner_decorator):
             return partial_binded_decorator
     return decorator_wrapper
 
-def save_params(method):
+@paramed_decorator
+def save_params(method, expand_dict=False):
     @wraps(method)
     def wrapper(self, *args, **kwargs):
         # 获取方法的完整签名
@@ -28,6 +30,9 @@ def save_params(method):
         for name, value in bound_args.arguments.items():
             if name != 'self':  # 排除self本身
                 setattr(self, name, value)
+                if expand_dict and isinstance(value, dict):
+                    for k, v in value.items():
+                        setattr(self, k, v)
         return method(self, *args, **kwargs)
     return wrapper
 

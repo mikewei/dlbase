@@ -1,12 +1,19 @@
 import torch
 from torch import Tensor
-from typing import Iterable, Tuple, NamedTuple, Dict
+from typing import Iterable, Tuple, NamedTuple, Dict, TypeVar
 
-def cat_tuples(*tuples: Iterable[Tuple[Tensor, ...]]) -> Tuple[Tensor, ...]:
-    return tuple(torch.cat(a) for a in zip(*tuples))
+def cat_tuples(*tuples: Tuple[Tensor, ...]) -> Tuple[Tensor, ...]:
+    return tuple(torch.cat(t) for t in zip(*tuples))
 
-def cat_namedtuples(*namedtuples: Iterable[NamedTuple]) -> NamedTuple:
-    return namedtuples[0].__class__(*cat_tuples(*namedtuples))
+T = TypeVar('T', bound=NamedTuple)
+def cat_namedtuples(*namedtuples: T) -> T:
+    first = next(iter(namedtuples), None)
+    if first is None:
+        raise ValueError('No NamedTuple provided')
+    return first.__class__(*cat_tuples(*namedtuples))  # type: ignore
 
-def cat_dicts(*dicts: Iterable[Dict[str, Tensor]]) -> Dict[str, Tensor]:
-    return dict(zip(dicts[0].keys(), (torch.cat(a) for a in zip(*(d.values() for d in dicts)))))
+def cat_dicts(*dicts: Dict[str, Tensor]) -> Dict[str, Tensor]:
+    first = next(iter(dicts), None)
+    if first is None:
+        return {}
+    return dict(zip(first.keys(), (torch.cat(a) for a in zip(*(d.values() for d in dicts)))))

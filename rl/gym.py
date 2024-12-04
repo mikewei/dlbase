@@ -1,4 +1,4 @@
-from typing import Literal, NamedTuple, Tuple, Dict, List
+from typing import Literal, NamedTuple, Tuple, Dict, Optional
 from abc import ABC, abstractmethod
 from collections import deque
 import gymnasium as gym
@@ -19,70 +19,6 @@ class StatesMemory(NamedTuple):
     next_states: Tensor
     terms: Tensor
     truncs: Tensor
-
-class GymAlgo(ABC):
-    def register_env(self, env: Env | VectorEnv):
-        pass
-    def get_device(self):
-        return 'cpu'
-    def need_training(self):
-        return True
-    @abstractmethod
-    def select_actions(self, states) -> Tuple[Tensor, Dict[str, Tensor]]:
-        ...
-    @abstractmethod
-    def step_check(self, num_eposides_done: int, dones: Tensor) -> Literal['update', 'quit', 'goon']:
-        ...
-    def update(self, memory: StatesMemory):
-        pass
-    def get_train_stats(self) -> NamedTuple:
-        return None
-
-class RandomAlgo(GymAlgo):
-    def register_env(self, env: Env | VectorEnv):
-        self.env = env
-        self.is_vec = isinstance(env, VectorEnv)
-        self.num_envs = env.num_envs if isinstance(env, VectorEnv) else 1
-        self.dones = torch.zeros(self.num_envs, dtype=torch.bool)
-    def need_training(self):
-        return False
-    def select_actions(self, states):
-        actions = torch.tensor(self.env.action_space.sample() if self.is_vec else self.env.action_space.sample()[np.newaxis])
-        return actions, {}
-    def step_check(self, num_episodes_done: int, dones: Tensor) -> Literal['update', 'quit', 'goon']:
-        self.dones |= dones
-        return 'quit' if self.dones.all() else 'goon'
-
-class GymDisplay(FigureDisplay):
-    def __init__(self, env: Env | VectorEnv):
-        assert env.render_mode == 'rgb_array'
-        super().__init__(auto_close_fig=None, hint='<GymDisplay>')
-        self.env = env
-        if isinstance(env, Env):
-            self.show = self._show_env
-        elif isinstance(env, VectorEnv):
-            self.show = self._show_envs
-        else:
-            raise ValueError(f'Unsupported env type: {type(env)}')
-    def _show_env(self):
-        env: Env = self.env
-        img = env.render()
-        fig = plt.figure()
-        plt.imshow(img)
-        plt.axis("off")
-        super().show(fig)
-        plt.close(fig)
-    def _show_envs(self):
-        envs: VectorEnv = self.env
-        imgs = envs.call('render')
-        fig = plt.figure(figsize=(12, 8))
-        for i, img in enumerate(imgs):
-            fig.add_subplot((len(imgs)+1)//2, 2, i+1)
-            plt.imshow(img)
-            plt.axis("off")
-            plt.title(f'env {i}')
-        super().show(fig)
-        plt.close(fig)
 
 class GymMemory:
     def __init__(self, maxlen: int, unit_size: int):
@@ -107,6 +43,77 @@ class GymMemory:
         self.states_memory.clear()
         self.action_ctxs_memory.clear()
 
+class GymAlgo(ABC):
+    def register_env(self, env: Env | VectorEnv):
+        pass
+    def get_device(self):
+        return 'cpu'
+    def need_training(self):
+        return True
+    @abstractmethod
+    def select_actions(self, states: Tensor) -> Tuple[Tensor, Dict[str, Tensor]]:
+        ...
+    @abstractmethod
+    def step_check(self, dones: Tensor) -> Literal['update', 'quit', 'goon']:
+        ...
+    def update(self, memory: GymMemory) -> Optional[NamedTuple]:
+        pass
+    def get_train_stats(self) -> Optional[NamedTuple]:
+        return None
+
+class RandomAlgo(GymAlgo):
+    def register_env(self, env: Env | VectorEnv):
+        self.env = env
+        self.is_vec = isinstance(env, VectorEnv)
+        self.num_envs = env.num_envs if isinstance(env, VectorEnv) else 1
+        self.dones = torch.zeros(self.num_envs, dtype=torch.bool)
+    def need_training(self):
+        return False
+    def select_actions(self, states):
+        if self.is_vec:
+            actions = torch.tensor(self.env.action_space.sample())
+        else:
+            actions = torch.tensor(self.env.action_space.sample()).unsqueeze(0)
+        return actions, {}
+    def step_check(self, dones: Tensor) -> Literal['update', 'quit', 'goon']:
+        self.dones |= dones
+        return 'quit' if self.dones.all() else 'goon'
+
+class GymDisplay(FigureDisplay):
+    def __init__(self, env: Env | VectorEnv):
+        assert env.render_mode == 'rgb_array'
+        super().__init__(auto_close_fig=None, hint='<GymDisplay>')
+        self.env = env
+        if isinstance(env, Env):
+            self.show = self._show_env  # type: ignore
+        elif isinstance(env, VectorEnv):
+            self.show = self._show_envs  # type: ignore
+        else:
+            raise ValueError(f'Unsupported env type: {type(env)}')
+    def _show_env(self):
+        env = self.env
+        img = env.render()
+        if img is None:
+            return
+        fig = plt.figure()
+        plt.imshow(img)
+        plt.axis("off")
+        super().show(fig)
+        plt.close(fig)
+    def _show_envs(self):
+        envs = self.env
+        imgs = envs.render()
+        if imgs is None:
+            return
+        fig = plt.figure(figsize=(12, 8))
+        for i, img in enumerate(imgs):
+            fig.add_subplot((len(imgs)+1)//2, 2, i+1)
+            plt.imshow(img)
+            plt.axis("off")
+            plt.title(f'env {i}')
+        super().show(fig)
+        plt.close(fig)
+
 class GymRunner:
     default_options = {
         'max_episodes': 5000,
@@ -117,7 +124,7 @@ class GymRunner:
     def __init__(self, env: Env | VectorEnv, algo: GymAlgo = RandomAlgo(), **kwargs):
         self.env = env
         self.is_vec = isinstance(env, VectorEnv)
-        self.num_envs = env.num_envs if self.is_vec else 1
+        self.num_envs = env.num_envs if isinstance(env, VectorEnv) else 1
         self.algo = algo
         self.algo.register_env(env)
         self.options = {**self.__class__.default_options, **kwargs}
@@ -135,7 +142,10 @@ class GymRunner:
         return self.algo.get_device() if self.algo else 'cpu'
     def run(self):
         state, _ = self.env.reset()
-        states = torch.tensor(state if self.is_vec else state[np.newaxis], dtype=torch.float32, device=self.device)
+        if self.is_vec:
+            states = torch.tensor(state, dtype=torch.float32, device=self.device)
+        else:
+            states = torch.tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
         total_steps = 0
         loop_steps = 0
         total_episodes_started = self.num_envs
@@ -149,12 +159,16 @@ class GymRunner:
             actions, action_ctxs = self.algo.select_actions(states)
             if self.is_vec:
                 next_states, rewards, terms, truncs, _ = self.env.step(actions.cpu().numpy())
+                next_states = torch.tensor(next_states, dtype=torch.float32, device=self.device)
+                rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device)
+                terms = torch.tensor(terms, dtype=torch.bool, device=self.device)
+                truncs = torch.tensor(truncs, dtype=torch.bool, device=self.device)
             else:
                 next_state, reward, terminated, truncated, _ = self.env.step(actions[0].cpu().numpy())
-                next_states = torch.tensor(next_state[np.newaxis], dtype=torch.float32, device=self.device)
-                rewards = torch.tensor(reward[np.newaxis], dtype=torch.float32, device=self.device)
-                terms = torch.tensor(terminated[np.newaxis], dtype=torch.bool, device=self.device)
-                truncs = torch.tensor(truncated[np.newaxis], dtype=torch.bool, device=self.device)
+                next_states = torch.tensor(next_state, dtype=torch.float32, device=self.device).unsqueeze(0)
+                rewards = torch.tensor(reward, dtype=torch.float32, device=self.device).unsqueeze(0)
+                terms = torch.tensor(terminated, dtype=torch.bool, device=self.device).unsqueeze(0)
+                truncs = torch.tensor(truncated, dtype=torch.bool, device=self.device).unsqueeze(0)
             total_steps += self.num_envs
             loop_steps += 1
             episode_steps += 1
@@ -165,19 +179,19 @@ class GymRunner:
                 total_episodes_started += num_episodes_done
                 total_episodes_done += num_episodes_done
                 show_env_counter += 1
-            check_result = self.algo.step_check(num_episodes_done, episode_dones)
+            check_result = self.algo.step_check(episode_dones)
             if check_result == 'quit':
                 break
             if self.need_training:
-                self.states_memory.append(StatesMemory(states, actions, rewards, next_states, terms, truncs))
-                self.action_ctxs_memory.append(action_ctxs)
+                self.memory.append(StatesMemory(states, actions, rewards, next_states, terms, truncs), action_ctxs)
                 if check_result == 'update':
-                    # todo: build batch
-                    clear_memory = self.algo.update(states, actions, rewards, next_states, episode_dones, **action_ctxs)
-                    if clear_memory:
-                        self.memory.clear()
+                    self.algo.update(self.memory)
+                    self.last_train_stats = self.algo.get_train_stats()
             if episode_dones.all():
                 state, _ = self.env.reset()
-                states = torch.tensor(state if self.is_vec else state[np.newaxis], dtype=torch.float32, device=self.device)
+                if self.is_vec:
+                    states = torch.tensor(state, dtype=torch.float32, device=self.device)
+                else:
+                    states = torch.tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
             else:
                 states = next_states
