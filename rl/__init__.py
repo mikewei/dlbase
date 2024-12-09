@@ -1,2 +1,2 @@
-__all__ = ['gym']
+__all__ = ['gyms']
 from . import *
