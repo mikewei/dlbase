@@ -26,11 +26,14 @@ class GymMemory:
         maxlen = max_steps // unit_size + 1
         self.states_memory: deque[StatesMemory] = deque(maxlen=maxlen)
         self.action_ctxs_memory: deque[Dict[str, Tensor]] = deque(maxlen=maxlen)
-        self.unit_size = unit_size
+        self._unit_size = unit_size
         self.sample_device = sample_device
     def append(self, states_memory: StatesMemory, action_ctxs: Dict[str, Tensor]):
         self.states_memory.append(states_memory)
         self.action_ctxs_memory.append(action_ctxs)
+    @property
+    def unit_size(self) -> int:
+        return self._unit_size
     def size(self):
         return len(self.states_memory) * self.unit_size
     def __len__(self):
@@ -44,7 +47,14 @@ class GymMemory:
         action_ctxs = cat_dicts(*(self.action_ctxs_memory[i] for i in indices))
         if self.sample_device is not None:
             states = StatesMemory(*(t.to(self.sample_device) for t in states))
-            action_ctxs = dict(*((k, v.to(self.sample_device)) for k, v in action_ctxs.items()))
+            action_ctxs = dict(((k, v.to(self.sample_device)) for k, v in action_ctxs.items()))
+        return states, action_ctxs
+    def all(self) -> Tuple[StatesMemory, Dict[str, Tensor]]:
+        states = cat_namedtuples(*self.states_memory)
+        action_ctxs = cat_dicts(*self.action_ctxs_memory)
+        if self.sample_device is not None:
+            states = StatesMemory(*(t.to(self.sample_device) for t in states))
+            action_ctxs = dict(((k, v.to(self.sample_device)) for k, v in action_ctxs.items()))
         return states, action_ctxs
     def clear(self):
         self.states_memory.clear()
@@ -226,7 +236,7 @@ class GymRunner:
             actions, action_ctxs = self.algo.select_actions(states.to(self.device))
             actions = actions.to(self.memory_device)
             if len(action_ctxs) > 0:
-                action_ctxs = dict(*(v.to(self.memory_device) for v in action_ctxs.values()))
+                action_ctxs = dict(((k, v.to(self.memory_device)) for k, v in action_ctxs.items()))
             if self.is_vec:
                 next_states, rewards, terms, truncs, _ = self.env.step(actions.numpy())
                 next_states = torch.tensor(next_states, device=self.memory_device)

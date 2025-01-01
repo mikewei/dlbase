@@ -1,8 +1,9 @@
 from typing import Callable, Dict, Tuple, NamedTuple, Literal, Optional
 from itertools import chain
-from gymnasium.spaces import Box
+from gymnasium.spaces import Box, Discrete
 import torch
 from torch import nn, optim, Tensor
+from torch.utils import data
 from torch.nn import functional as F
 from torch.nn.utils import clip_grad
 from dlbase.utils.py import save_params
@@ -155,3 +156,129 @@ class TD3(GymAlgo):
         self.update_count += 1
         self.steps_count += len(dones)
         return self.TrainStats(critic_loss.item() / 2)
+
+class PPO(GymAlgo):
+    class Params(NamedTuple):
+        device: str = 'cuda'
+        train_per_steps: int = 6400
+        train_epoch_num: int = 6
+        batch_size: int = 128
+        lr: float = 3e-4
+        gamma: float = 0.99  # gamma通常取[0.95, 0.99]
+        lambd: float = 0.95
+        eps_clip: float = 0.2
+        c1: float = 4.0
+        c2: float = 0.02
+        action_regu_fn: Callable[[Tensor], Tensor] = None
+    class TrainStats(NamedTuple):
+        a_loss: float
+        c_loss: float
+        advantage: float
+        std: float = 0.0
+
+    def __init__(self, actor: PActor, critic: VCritic, continuous_action: bool, **params):
+        self.hp = self.Params(**params)
+        self.continuous_action = continuous_action
+        self.actor = actor.to(self.hp.device)
+        self.critic = critic.to(self.hp.device)
+        self.optim_actor = optim.Adam(self.actor.parameters(), lr=self.hp.lr, amsgrad=True)
+        self.optim_critic = optim.Adam(self.critic.parameters(), lr=self.hp.lr, amsgrad=True)
+        self.collect_steps = 0
+    def register(self, env: Env | VectorEnv) -> Optional[Dict]:
+        if self.continuous_action:
+            if not isinstance(env.action_space, Box):
+                raise ValueError("The environment must have continuous action spaces")
+            if isinstance(env, VectorEnv):
+                self.action_min = torch.tensor(env.action_space.low, device=self.hp.device)[0]
+                self.action_max = torch.tensor(env.action_space.high, device=self.hp.device)[0]
+            else:
+                self.action_min = torch.tensor(env.action_space.low, device=self.hp.device)
+                self.action_max = torch.tensor(env.action_space.high, device=self.hp.device)
+        else:
+            if not isinstance(env.action_space, Discrete):
+                raise ValueError("The environment must have discrete action spaces")
+        return None
+    def get_device(self):
+        return self.hp.device
+    def select_actions(self, states: Tensor) -> Tuple[Tensor, Dict[str, Tensor]]:
+        with torch.no_grad():
+            if self.continuous_action:
+                mean, std = self.actor(states)
+                action = torch.clamp(mean + torch.randn_like(std) * std, -1.0, 1.0)
+                return action, {'old_log_prob': self._log_prob_normal(mean, std, action)}
+            else:
+                probs = self.actor(states)
+                action = torch.argmax(probs, dim=-1)
+                return action, {'old_log_prob': torch.log(probs[:, action])}
+    def update(self, memory: GymMemory, dones: Tensor) -> Optional[TrainStats]:
+        self.collect_steps += 1
+        if self.collect_steps < self.hp.train_per_steps or not dones.any():
+            return None
+        else:
+            self.collect_steps = 0
+        states, action_ctxs = memory.all()
+        with torch.no_grad():
+            values = self.critic(states.states)
+            next_values = self.critic(states.next_states)
+        # calc advantage
+        advantages = self.calc_traj_advantage(values, states.rewards, next_values, states.terms, states.truncs, memory.unit_size)
+        # train batch
+        dataset = data.TensorDataset(states.states, states.actions, action_ctxs['old_log_prob'], values, advantages)
+        loader = data.DataLoader(dataset, batch_size=self.hp.batch_size, shuffle=True)
+        total_loss = actor_loss = critic_loss = torch.tensor(0.0)
+        for _ in range(self.hp.train_epoch_num):
+            for batch in loader:
+                total_loss, (actor_loss, critic_loss, _) = self.total_loss(*batch)
+                self.optim_actor.zero_grad()
+                self.optim_critic.zero_grad()
+                total_loss.backward()
+                self.optim_actor.step()
+                self.optim_critic.step()
+        memory.clear()
+        # monitor output
+        with torch.no_grad():
+            total_loss_val, actor_loss_val, critic_loss_val = total_loss.item(), actor_loss.item(), critic_loss.item()
+            avg_advantage = advantages.mean().item()
+            std = getattr(self.actor, 'std', None)
+            if std is not None:
+                std_val = std.mean().item()
+            else:
+                std_val = 0.0
+            return self.TrainStats(actor_loss_val, critic_loss_val, avg_advantage, std_val)
+    def calc_traj_advantage(self, values, rewards, next_values, terms, truncs, unit_size):
+        # note that next_values should not be ignored for truncated trajectory
+        values = values.reshape(-1, unit_size)
+        rewards = rewards.reshape(-1, unit_size)
+        next_values = next_values.reshape(-1, unit_size)
+        terms = terms.reshape(-1, unit_size)
+        truncs = truncs.reshape(-1, unit_size)
+        deltas = rewards + self.hp.gamma * next_values * ~terms - values
+        advantages = torch.empty_like(deltas)
+        advantages[-1] = deltas[-1]
+        for t in range(len(deltas)-2, -1, -1):
+            advantages[t] = deltas[t] + self.hp.gamma * self.hp.lambd * advantages[t+1] * ~(terms[t]|truncs[t])
+        return advantages.reshape(-1)
+    def total_loss(self, states, actions, old_log_probs, old_values, advantages):
+        actor_loss = self.actor_loss(states, actions, old_log_probs, advantages)
+        critic_loss = self.hp.c1 * self.critic_loss(states, old_values, advantages)
+        entropy_loss = self.hp.c2 * self.entropy_loss()
+        total = actor_loss + critic_loss + entropy_loss
+        return total, (actor_loss, critic_loss, entropy_loss)
+    def actor_loss(self, states, actions, old_log_probs, advantages):
+        mean, std = self.actor(states)
+        action_regu = self.hp.action_regu_fn(mean) if self.hp.action_regu_fn is not None else 0.0
+        new_log_probs = self._log_prob_normal(mean, std, actions)
+        ratio = (new_log_probs - old_log_probs).exp()
+        return -torch.min(ratio * advantages, torch.clamp(ratio, 1-self.hp.eps_clip, 1+self.hp.eps_clip) * advantages).mean() + action_regu
+    def critic_loss(self, states, old_values, advantages):
+        new_values = self.critic(states)
+        return F.mse_loss(new_values, old_values + advantages)
+    def entropy_loss(self):
+        std = getattr(self.actor, 'std', None)
+        if self.continuous_action and std is not None:
+            return -std.log().sum()
+        else:
+            return 0
+    def _log_prob_normal(self, mean, std, sample):
+        """ ignore constant term -0.5*ln(2*pi) """
+        return -((sample - mean) / std).pow(2).sum(-1) / 2 - std.log().sum(-1)

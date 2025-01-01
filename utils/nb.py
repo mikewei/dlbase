@@ -43,8 +43,9 @@ class TableDisplay(TextDisplay):
         self.deque = deque(maxlen=last_n)
         self.RecType = None
     def log(self, *records: NamedTuple):
-        if self.RecType is None:
-            self.RecType = namedtuple('RecType', chain(*(r._fields for r in records)))
+        rec_fields = tuple(chain(*(r._fields for r in records)))
+        if self.RecType is None or self.RecType._fields != rec_fields:
+            self.RecType = namedtuple('RecType', rec_fields)
         rec = self.RecType(*[f'{value:.4f}' if isinstance(value, float) else str(value) for record in records for value in record])
         header = '| ' + ' | '.join([field for field in rec._fields]) + ' |\n' + '|-' * len(rec._fields) + '|\n'
         row = '| ' + ' | '.join([f'{getattr(rec, field)}' for field in rec._fields]) + ' |' 
